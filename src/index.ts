@@ -8,7 +8,7 @@ import ms from 'ms';
 export default defineEndpoint({
 	id: 'playnative',
 	handler: (router, context) => {
-		const { services, getSchema, env } = context;
+		const { services, database, getSchema, env, logger } = context;
 		const { UsersService, ItemsService } = services;
 
 		const oAuth2Client = new google.auth.OAuth2(env.AUTH_GOOGLE_CLIENT_ID, env.AUTH_GOOGLE_CLIENT_SECRET)
@@ -18,15 +18,13 @@ export default defineEndpoint({
 			const usersService = new UsersService({ schema});
 			const sessionsService = new ItemsService('directus_sessions',{ schema });
 			if(!req.body.code){
-				res.json({"error":"code is required"});
-				return;
+				return res.status(422).json({error:"code is required"});
 			}
 			let tokenResponse;
 			try {
 				 tokenResponse =  await oAuth2Client.getToken(req.body.code);
 				if (!tokenResponse.tokens){
-					res.status(400).json({error:"Could not fetch tokens for provided auth code"}).end();
-					return;
+					return res.status(400).json({error:"Could not fetch tokens for provided auth code"}).end();
 				}
 				 oAuth2Client.setCredentials(tokenResponse.tokens);
 				google.options({
@@ -34,22 +32,22 @@ export default defineEndpoint({
 				});
 			}
 			catch (e) {
-				res.status(400).json({error:"Exception:Could not fetch tokens for provided auth code"}).end();
-				return;
+				logger.error(e,"Error fetching token response")
+				return res.status(400).json({error:"Exception:Could not fetch tokens for provided auth code"}).end();
 			}
 			let player;
 			try {
 				player = await google.games("v1").players.get({"playerId":"me"});
 			}
 			catch (e) {
-				res.status(400).json({error:"Exception:Could not get player from play games service for this auth code"}).end();
-				return;
+				logger.error(e,"Error fetching player/me")
+				return res.status(400).json({error:"Exception:Could not get player from play games service for this auth code"}).end();
 			}
+			// logger.info(player, "Fetched player/me")
 			if (isEmpty(player.data.playerId)){
-				res.status(400).json({error:"Could not get playerId from play games service for this auth code"}).end();
-				return;
+				return res.status(400).json({error:"Could not get playerId from play games service for this auth code"}).end();
 			}
-			const userEmail = `${player.data.playerId}@noemail.com`;
+			const userEmail = `${player.data.playerId}@pgsnoemail.com`;
 			let foundUser = await usersService.getUserByEmail(userEmail);
 			try {
 				if (!isEmpty(foundUser) && !isEmpty(tokenResponse.tokens.refresh_token)){
@@ -70,8 +68,8 @@ export default defineEndpoint({
 				}
 			}
 			catch (e) {
-				res.status(500).json({error:"Exception:Could not access / create user for this AuthCode"}).end();
-				return;
+				logger.error(e,`Error updating directus user, email=${userEmail}`)
+				return res.status(500).json({error:`Exception:Could not access / create user for this AuthCode`}).end();
 			}
 			try{
 				const access_token = jwt.sign({
@@ -91,15 +89,15 @@ export default defineEndpoint({
 					user: foundUser.id,
 					expires: refreshTokenExpiration
 				});
-				res.json( {
+				return res.json( {
 					access_token,
 					refresh_token,
 					expires: ms(env.ACCESS_TOKEN_TTL)
 				});
 			}
 			catch (e) {
-				res.status(500).json({error:"Exception:Could not create / sign access tokens for this Auth Code"}).end();
-				return;
+				logger.error(e,"Error signing access token")
+				return res.status(500).json({error:"Exception:Could not create / sign access tokens for this Auth Code"}).end();
 			}
 		});
 	},
